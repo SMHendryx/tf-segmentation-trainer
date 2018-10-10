@@ -151,15 +151,20 @@ class SegmentationDataLoader(object):
 
     def _one_hot_encode(self, image, mask):
         """
-        Converts mask to a one-hot encoding specified by the semantic map.
+        Converts single mask to a one-hot encoding specified by the semantic map.
         """
+        #comparison = tf.not_equal( mask, tf.constant( 0 ) )    
+
         one_hot_map = []
         for colour in self.palette:
             class_map = tf.reduce_all(tf.equal(mask, colour), axis=-1)
             one_hot_map.append(class_map)
         one_hot_map = tf.stack(one_hot_map, axis=-1)
+
+        if self.mask_channels == 1: # Make single channel one_hot_map
+            one_hot_map = one_hot_map[:,:,1][:,:,tf.newaxis]
+
         one_hot_map = tf.cast(one_hot_map, tf.float32)
-        
         return image, one_hot_map
 
     def data_batch(self, shuffle=False, one_hot_encode=True, batch_size=16, num_threads=2, buffer=32):
