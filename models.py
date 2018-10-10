@@ -48,7 +48,7 @@ class UnetModel:
         self.num_channels = 3
 
         self.input_ph = tf.placeholder(tf.float32, shape=(None, self.n_pix_rows, self.n_pix_cols, self.num_channels), name='X') # tf format tensor: (num_examples, dim_x, dim_y, num_channels)
-        self.label_ph = tf.placeholder(tf.int32, shape=(None,self.n_pix_rows, self.n_pix_cols, self.num_classes), name='Y')
+        self.label_ph = tf.placeholder(tf.float32, shape=(None,self.n_pix_rows, self.n_pix_cols, self.num_classes), name='Y')
 
         self._he_init = tf.contrib.layers.variance_scaling_initializer()
 
