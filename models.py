@@ -84,6 +84,7 @@ class UnetModel:
         # Pixel-wise softmax:
         with tf.name_scope('predictions'):
             self.predictions = tf.nn.softmax(self.logits)
+        self.iou = self._iou(self.label_ph, self.predictions)
 
         # Define loss:
         self.flat_label_ph = tf.reshape(self.label_ph, (-1, int(np.prod(self.label_ph.get_shape()[1:]))))
@@ -128,4 +129,27 @@ class UnetModel:
         conv = tf.layers.batch_normalization(conv, training=True)
         conv = tf.layers.conv2d(conv,  output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self._he_init)#, name='Conv-2')
         return  tf.layers.batch_normalization(conv, training=True)
+
+    def _iou(self, Y_true, Y_hat, epsilon=1e-7):
+        """
+        Returns an approximate intersection over union score
+
+        intesection = Y_hat.flatten() * Y_true.flatten()
+        IOU = 2 * intersection / (Y_hat.sum() + Y_true.sum() + epsilon) + epsilon
+
+        :param y_hat: (4-D array): (N, H, W, 1)
+        :param Y_true: (4-D array): (N, H, W, 1)
+        :return: floating point IoU score
+        """
+        height, width, _ = Y_hat.get_shape().as_list()[1:]
+
+        pred_flat = tf.reshape(Y_hat, [-1, height * width])
+        true_flat = tf.reshape(Y_true, [-1, height * width])
+
+        intersection = 2 * tf.reduce_sum(pred_flat * true_flat, axis=1) + epsilon
+        denominator = tf.reduce_sum(
+            pred_flat, axis=1) + tf.reduce_sum(
+                true_flat, axis=1) + epsilon
+
+        return tf.reduce_mean(intersection / denominator)
 
