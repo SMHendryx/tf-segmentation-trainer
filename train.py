@@ -38,11 +38,12 @@ import argparse
 from utils.SegmentationDataLoader import SegmentationDataLoader
 from models import UnetModel
 
-# dev packages:
+# DEV:
 import pdb
-
-
-VIZ = False
+VIZTRAININGDATA = False # If True only visualize data from the data loader but do not perform train ops
+DEBUG = False # If True, fetch intermediate tensors for begubbing and maybe visualize predictions
+VIZPREDICTIONS = False # Only works if DEBUG also set to True
+VERBOSE = False
 
 
 def parse_args():
@@ -71,22 +72,31 @@ def main():
     checkpoint_dir=args.checkpoint
     restore_from_ckpnt_bool=args.restore_from_checkpoint
     log_dir=args.log_dir
+
     # Training params:
     random.seed(args.seed)
     batch_size=args.batch_size
     epochs=args.epochs
     eval_interval=args.eval_interval
 
+
     mkdir(log_dir)
 
-
-    model = UnetModel(num_classes=num_classes)
+    # good hyperparameters:
+    #optim_kwargs = {'learning_rate':0.0001} # with batch size of 16 and tf.train.RMSPropOptimizer
+    optim_kwargs = {'learning_rate':0.0005} # with batch size of 16 and tf.train.AdamOptimizer
+    model = UnetModel(num_classes=num_classes, n_unet_encoding_stacks=4, **optim_kwargs)
     X = model.input_ph
     Y = model.label_ph
     Y_hat = model.predictions
     cross_entropy_loss = model.loss
+    soft_dice_loss = model.soft_dice_loss
     train_op = model.minimize_op
     iou_op = model.iou
+    if DEBUG:
+        logits = model.logits
+        encoded = model.encoded
+        decoded = model.decoded
 
     # Make a queue of filenames including all the jpg image and png mask files:
     image_paths, mask_paths = get_image_label_paths(images_dir, masks_dir)
@@ -98,31 +108,33 @@ def main():
     image_paths, mask_paths, test_image_paths, test_mask_paths = split_dataset(image_paths, mask_paths)
 
     # Initialize the segmentation data loading iterator for streaming batches of images and masks
-    seg_data_loader = SegmentationDataLoader(image_paths=image_paths,
-                                    mask_paths=mask_paths,
-                                    image_extension='.jpg',
-                                    image_channels=3,
-                                    mask_channels=1,
-                                    palette=[0, 255])
-    batch_stream, init_op = seg_data_loader.data_batch(shuffle=False,
-                                                        one_hot_encode=True,
-                                                        batch_size=16,
-                                                        num_threads=2,
-                                                        buffer=32)
+    with tf.device('/cpu:0'):
+        seg_data_loader = SegmentationDataLoader(image_paths=image_paths,
+                                        mask_paths=mask_paths,
+                                        image_extension='.jpg',
+                                        image_channels=3,
+                                        mask_channels=1,
+                                        palette=[0, 255])
+        batch_stream, init_op = seg_data_loader.data_batch(shuffle=False,
+                                                            one_hot_encode=True,
+                                                            batch_size=batch_size,
+                                                            num_threads=1,
+                                                            buffer=16)
 
-    test_seg_data_loader = SegmentationDataLoader(image_paths=test_image_paths,
-                                    mask_paths=test_mask_paths,
-                                    image_extension='.jpg',
-                                    image_channels=3,
-                                    mask_channels=1,
-                                    palette=[0, 255])
-    test_batch_stream, test_init_op = test_seg_data_loader.data_batch(shuffle=False,
-                                                        one_hot_encode=True,
-                                                        batch_size=16,
-                                                        num_threads=2,
-                                                        buffer=32)
+        test_seg_data_loader = SegmentationDataLoader(image_paths=test_image_paths,
+                                        mask_paths=test_mask_paths,
+                                        image_extension='.jpg',
+                                        image_channels=3,
+                                        mask_channels=1,
+                                        palette=[0, 255])
+        test_batch_stream, test_init_op = test_seg_data_loader.data_batch(shuffle=False,
+                                                            one_hot_encode=True,
+                                                            batch_size=batch_size,
+                                                            num_threads=1,
+                                                            buffer=16)
 
-    with tf.Session() as sess:
+    gpu_options = tf.GPUOptions(allow_growth=True)
+    with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
         # Initialize the data queue
         sess.run(init_op)
         sess.run(test_init_op)
@@ -132,30 +144,63 @@ def main():
         merged, train_writer, test_writer = setup_logging_and_get_merged_summaries(sess, cross_entropy_loss, iou_op)
 
         for epoch in range(epochs):
+            print('Epoch: ', epoch)
             for step in range(0, num_train, batch_size):
+                print('Samples seen this epoch: ', step)
 
                 # Get training and test data:
-                train_image_batch, train_mask_batch = sess.run(batch_stream)
-                test_image_batch, test_mask_batch = sess.run(test_batch_stream)
+                try:
+                    train_image_batch, train_mask_batch = sess.run(batch_stream)
+                except tf.errors.OutOfRangeError:
+                    sess.run(init_op)
+                    train_image_batch, train_mask_batch = sess.run(batch_stream)
+                try:
+                    test_image_batch, test_mask_batch = sess.run(test_batch_stream)
+                except tf.errors.OutOfRangeError:
+                    sess.run(test_init_op)
+                    test_image_batch, test_mask_batch = sess.run(test_batch_stream)
 
-                if VIZ:
+                if VERBOSE:
+                    print('train_image_batch.shape: ', train_image_batch.shape)
+
+                if VIZTRAININGDATA: # DO NOT TRAIN
                     for i in range(train_image_batch.shape[0]):
-                        plot_two_images(train_image_batch[i,:], train_mask_batch[i,:,:,0])
-
-
-                if step % eval_interval == 0:  # Record summaries and test-set IoU
-                    summary, iou = sess.run([merged, iou_op], 
-                        feed_dict={
-                            X: test_image_batch, 
-                            Y: test_mask_batch})
-                    test_writer.add_summary(summary, step)
-                    print('IoU on test-set at step {}: {}'.format(step, iou))
-                else:  # Record train set summaries, and take training step with train)_op
-                    summary, _ = sess.run([merged, train_op], 
-                        feed_dict={
-                            X: train_image_batch,
-                            Y: train_mask_batch})
-                    train_writer.add_summary(summary, step)
+                        print('unique values in train masks:')
+                        print(np.unique(train_mask_batch[i,:,:,1]))
+                        plot_two_images(train_image_batch[i,:], train_mask_batch[i,:,:,1])
+                        plot_two_images(train_mask_batch[i,:,:,0], train_mask_batch[i,:,:,1])
+                        
+                else:
+                    if ((step/batch_size) % eval_interval == 0):  # Record summaries and test-set IoU
+                        summary, iou, test_loss, test_predictions = sess.run([merged, iou_op, cross_entropy_loss, Y_hat], 
+                            feed_dict={
+                                X: test_image_batch, 
+                                Y: test_mask_batch})
+                        print('test_loss: {}'.format(test_loss))
+                        test_writer.add_summary(summary, step)
+                        print('IoU on test-set at step {}: {}'.format(step, iou))
+                        saver.save(sess, os.path.join(checkpoint_dir, 'model.ckpt'))
+                    else:  # Record train set summaries, and take training step with train)_op
+                        if DEBUG:
+                            summary, _, train_loss, train_predictions, encoded_out, decoded_out, logits_out = sess.run([merged, train_op, cross_entropy_loss, Y_hat, encoded, decoded, logits], 
+                                feed_dict={
+                                    X: train_image_batch,
+                                    Y: train_mask_batch})
+                            print('train_loss: {}'.format(train_loss))
+                            print('train_predictions: {}'.format(train_predictions))
+                            if VIZPREDICTIONS:
+                                for i in range(train_predictions.shape[0]):
+                                    plot_two_images(train_image_batch[i,:], train_mask_batch[i,:,:,1])
+                                    plot_two_images(train_mask_batch[i,:,:,1], train_predictions[i,:,:,1])
+                        else:
+                            summary, _, iou,sdl, train_loss = sess.run([merged, train_op, iou_op,soft_dice_loss, cross_entropy_loss], 
+                                feed_dict={
+                                    X: train_image_batch,
+                                    Y: train_mask_batch})
+                            print('iou: {}'.format(iou))
+                            print('soft_dice_loss: {}'.format(sdl))
+                            print('train_loss: {}'.format(train_loss))
+                            train_writer.add_summary(summary, step)
 
         saver.save(sess, os.path.join(checkpoint_dir, 'model.ckpt'))
 
@@ -202,15 +247,19 @@ def split_dataset(image_paths, mask_paths, train_percentage=0.8):
     image and mask paths are assumed to be in corresponding order.
     :return: train_image_paths, train_mask_paths, test_image_paths, test_mask_paths
     """
-    all_data = list(zip(image_paths, mask_paths))
-    random.shuffle(all_data)
-    num_train = int(np.floor(len(image_paths) * train_percentage))
-    train_image_paths = [x[0] for x in all_data[:num_train]]
-    train_mask_paths = [x[1] for x in all_data[:num_train]]
-    test_image_paths = [x[0] for x in all_data[num_train:]]
-    test_mask_paths = [x[1] for x in all_data[num_train:]]
-    #zip(*all_data[:num_train]), zip(*all_data[num_train:])
-    return train_image_paths, train_mask_paths, test_image_paths, test_mask_paths
+    if train_percentage > 0.0:
+        all_data = list(zip(image_paths, mask_paths))
+        random.shuffle(all_data)
+        num_train = int(np.floor(len(image_paths) * train_percentage))
+        train_image_paths = [x[0] for x in all_data[:num_train]]
+        train_mask_paths = [x[1] for x in all_data[:num_train]]
+        test_image_paths = [x[0] for x in all_data[num_train:]]
+        test_mask_paths = [x[1] for x in all_data[num_train:]]
+        #zip(*all_data[:num_train]), zip(*all_data[num_train:])
+        print("Dataset split into {} training examples and {} test examples".format(len(train_mask_paths), len(test_mask_paths)))
+        return train_image_paths, train_mask_paths, test_image_paths, test_mask_paths
+    else:
+        return image_paths, mask_paths, None, None
 
 def get_test_data(image_paths, mask_paths, test_percentage=0.2):
     import random

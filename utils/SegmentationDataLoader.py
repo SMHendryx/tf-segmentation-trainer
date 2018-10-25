@@ -125,7 +125,7 @@ class SegmentationDataLoader(object):
     def _parse_data(self, image_paths, mask_paths):
         """
         Reads image and mask files depending on
-        specified exxtension.
+        specified extension.
         """
         image_content = tf.read_file(image_paths)
         mask_content = tf.read_file(mask_paths)
@@ -161,8 +161,8 @@ class SegmentationDataLoader(object):
             one_hot_map.append(class_map)
         one_hot_map = tf.stack(one_hot_map, axis=-1)
 
-        if self.mask_channels == 1: # Make single channel one_hot_map
-            one_hot_map = one_hot_map[:,:,1][:,:,tf.newaxis]
+        #if self.mask_channels == 1: # Make single channel one_hot_map
+        #    one_hot_map = one_hot_map[:,:,1][:,:,tf.newaxis]
 
         one_hot_map = tf.cast(one_hot_map, tf.float32)
         return image, one_hot_map
