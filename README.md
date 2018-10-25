@@ -11,7 +11,7 @@ pip install -r requirements.txt
 ```
 
 ### Data
-Each image file and corresponding mask should have the same basename regardless of extension. Images are expected as three-channel, RGB, `.jpg` files and masks are expected as num-channel `.png` files. These extensions can be modified in `train.py`.
+Each image file and corresponding mask should have the same basename regardless of extension. Images are expected as three-channel, RGB, `.jpg` files and masks are expected as num-class-channel `.png` files. These extensions can be modified in `train.py`.
 
 ## Usage
 
