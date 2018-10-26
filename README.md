@@ -24,3 +24,6 @@ For args descriptions run:
 ```
 python train.py --help
 ```
+
+Sample prediction for road segmentation task:
+![assets](assets/1.8epochs.png)
