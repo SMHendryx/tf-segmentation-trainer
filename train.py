@@ -41,16 +41,15 @@ from models import UnetModel
 # DEV:
 import pdb
 VIZTRAININGDATA = False # If True only visualize data from the data loader but do not perform train ops
-DEBUG = False # If True, fetch intermediate tensors for begubbing and maybe visualize predictions
+DEBUG = False # If True, fetch intermediate tensors for debugging and maybe visualize predictions
 VIZPREDICTIONS = False # Only works if DEBUG also set to True
-VERBOSE = False
 
 
 def parse_args():
     """
     Returns an argument parser object for image segmentation training script.
     """
-    parser = argparse.ArgumentParser(description='Trains U-Net for image segmentation when provided with directories of images and corresponding masks.')
+    parser = argparse.ArgumentParser(description='Trains adapted U-Net for image segmentation when provided with directories of images and corresponding masks.')
     parser.add_argument('--images_dir', '-i', help='Path to directory containing images.', required=True)
     parser.add_argument('--masks_dir', '-m', help='Path to directory containing masks. Each element of an image-mask pair should have the same basename (regardless of extension).', required=True)
     parser.add_argument('--num_classes', help='Number of classes in segmentation task. 1 for binary segmentation.', default=1, type=int)
@@ -90,7 +89,7 @@ def main():
     Y = model.label_ph
     Y_hat = model.predictions
     cross_entropy_loss = model.loss
-    soft_dice_loss = model.soft_dice_loss
+    soft_iou_loss = model.soft_iou_loss
     train_op = model.minimize_op
     iou_op = model.iou
     if DEBUG:
@@ -141,7 +140,7 @@ def main():
 
         saver, checkpoint_dir=setup_checkpointing(sess, checkpoint_dir, restore_from_ckpnt_bool)
 
-        merged, train_writer, test_writer = setup_logging_and_get_merged_summaries(sess, cross_entropy_loss, iou_op)
+        merged, train_writer, test_writer = setup_logging_and_get_merged_summaries(sess, cross_entropy_loss, iou_op, X, Y, Y_hat, soft_iou_loss)
 
         for epoch in range(epochs):
             print('Epoch: ', epoch)
@@ -160,7 +159,7 @@ def main():
                     sess.run(test_init_op)
                     test_image_batch, test_mask_batch = sess.run(test_batch_stream)
 
-                if VERBOSE:
+                if DEBUG:
                     print('train_image_batch.shape: ', train_image_batch.shape)
 
                 if VIZTRAININGDATA: # DO NOT TRAIN
@@ -168,7 +167,7 @@ def main():
                         print('unique values in train masks:')
                         print(np.unique(train_mask_batch[i,:,:,1]))
                         plot_two_images(train_image_batch[i,:], train_mask_batch[i,:,:,1])
-                        plot_two_images(train_mask_batch[i,:,:,0], train_mask_batch[i,:,:,1])
+                        #plot_two_images(train_mask_batch[i,:,:,0], train_mask_batch[i,:,:,1])
                         
                 else:
                     if ((step/batch_size) % eval_interval == 0):  # Record summaries and test-set IoU
@@ -192,13 +191,13 @@ def main():
                                 for i in range(train_predictions.shape[0]):
                                     plot_two_images(train_image_batch[i,:], train_mask_batch[i,:,:,1])
                                     plot_two_images(train_mask_batch[i,:,:,1], train_predictions[i,:,:,1])
-                        else:
-                            summary, _, iou,sdl, train_loss = sess.run([merged, train_op, iou_op,soft_dice_loss, cross_entropy_loss], 
+                        else: # Train:
+                            summary, _, iou,sil, train_loss = sess.run([merged, train_op, iou_op,soft_iou_loss, cross_entropy_loss], 
                                 feed_dict={
                                     X: train_image_batch,
                                     Y: train_mask_batch})
                             print('iou: {}'.format(iou))
-                            print('soft_dice_loss: {}'.format(sdl))
+                            print('soft_iou_loss: {}'.format(sil))
                             print('train_loss: {}'.format(train_loss))
                             train_writer.add_summary(summary, step)
 
@@ -223,13 +222,20 @@ def setup_checkpointing(sess, checkpoint_dir, restore_from_ckpnt_bool=True):
         os.mkdir(checkpoint_dir)
     return saver, checkpoint_dir
 
-def setup_logging_and_get_merged_summaries(sess, cross_entropy_tensor, iou_tensor, log_dir='logs'):
+def setup_logging_and_get_merged_summaries(sess, cross_entropy_tensor, iou_tensor, X, Y, Y_hat, soft_iou_loss, log_dir='logs'):
     mkdir(log_dir)
     #loss_tensor:
     tf.summary.scalar('cross_entropy', cross_entropy_tensor)
 
     with tf.name_scope('IoU'):
         tf.summary.scalar('IoU', iou_tensor)
+
+    tf.summary.scalar('soft_iou_loss', soft_iou_loss)
+
+    _MAX_OUTPUTS = 3
+    tf.summary.image('input', X, max_outputs=_MAX_OUTPUTS)
+    tf.summary.image('prediction', Y_hat[:,:,:,1:], max_outputs=_MAX_OUTPUTS)
+    tf.summary.image('mask', Y[:,:,:,1:], max_outputs=_MAX_OUTPUTS)
 
     # Merge all the summaries and write them out to
     # 'logs' (by default)

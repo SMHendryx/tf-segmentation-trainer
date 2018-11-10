@@ -34,7 +34,7 @@ from tensorflow.image import ResizeMethod
 class UnetModel:
     """
     U-net model for image segmentation. Changes from the original u-net paper include batch normalization for faster learning and 
-    bilinear upsampling in the decoding layers for ouput in the same shape as the input (if image dims are not a power of 2).
+    bilinear upsampling in the decoding layers for ouput in the same shape as the input.
     """
     def __init__(self, num_classes=1, n_pix_rows=512, n_pix_cols=512, n_unet_encoding_stacks=4, optimizer=tf.train.AdamOptimizer, **optim_kwargs):
         """
@@ -51,15 +51,13 @@ class UnetModel:
         self.num_channels = 3
         self.batch_normalization_training_bool = True # argument to training parameter in tf.layers.batch_normalization
         self.weights_initializer = tf.glorot_normal_initializer()
-        self.loss_function_name =  'cross_entropy'# 'soft_dice' # or 'cross_entropy'
+        self.loss_function_name =  'soft_iou' # or 'cross_entropy'
 
         if n_unet_encoding_stacks < 1:
             raise ValueError('n_unet_encoding_stacks must be at least 1 but is: {}'.format(n_unet_encoding_stacks))
 
         self.input_ph = tf.placeholder(tf.float32, shape=(None, self.n_pix_rows, self.n_pix_cols, self.num_channels), name='X') # tf format tensor: (num_examples, dim_x, dim_y, num_channels)
         self.label_ph = tf.placeholder(tf.float32, shape=(None,self.n_pix_rows, self.n_pix_cols, self.num_output_channels), name='Y')
-
-        #self._he_init = tf.contrib.layers.variance_scaling_initializer()
 
         # Encode:
         self.encoded, self.skip_connection_tensors = self.encode()
@@ -79,22 +77,22 @@ class UnetModel:
             self.predictions = tf.nn.softmax(self.logits)
         self.iou = self._iou(self.label_ph, self.predictions)
 
-        # Define loss:
+        # Define losses:
         print('labels: {}'.format(self.label_ph))
         self.flat_label_ph = tf.reshape(self.label_ph, [-1, self.num_output_channels])
         print('flat_labels: {}'.format(self.flat_label_ph))
         
         # Cross entropy loss:
         self.loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.flat_label_ph, logits = self.flat_logits))
-        # Soft dice loss as an approximation to IoU:
-        self.soft_dice_loss = self._soft_dice_loss(self.label_ph, self.predictions)
+        # Soft IoU/Jaccard loss as an approximation to IoU:
+        self.soft_iou_loss = self._soft_iou_loss(self.label_ph, self.predictions)
         
         if self.loss_function_name == 'cross_entropy':
             self.minimize_op = optimizer(**optim_kwargs).minimize(self.loss)
-        elif self.loss_function_name =='soft_dice':
-            self.minimize_op = optimizer(**optim_kwargs).minimize(self.soft_dice_loss)
+        elif self.loss_function_name =='soft_iou':
+            self.minimize_op = optimizer(**optim_kwargs).minimize(self.soft_iou_loss)
         else:
-            raise ValueError('Loss string must be cross_entropy or soft_dice.')
+            raise ValueError('Loss string must be cross_entropy or soft_iou.')
 
 
 
@@ -102,7 +100,7 @@ class UnetModel:
         encodings = []
         for i in range(self.n_unet_encoding_stacks):
             if i == 0:
-                conv = self.stack_encoder(self.input_ph, 2**3)
+                conv = self.stack_encoder(self.input_ph, 2 ** 3)
             else:
                 conv = self.stack_encoder(conv, 2 ** (3 + i))
             encodings.append(conv)
@@ -110,12 +108,11 @@ class UnetModel:
             conv = tf.layers.max_pooling2d(inputs=conv, pool_size=[2, 2], strides=2)
 
         # Bottom of the U:
-        n_feature_channels = 2 ** (6 + self.n_unet_encoding_stacks)
+        n_feature_channels = 2 ** (3 + self.n_unet_encoding_stacks)
         conv = tf.layers.conv2d(conv, n_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)
         conv = tf.layers.conv2d(conv, n_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)
         conv = self.batch_normalization(conv)
         
-        #encodings.append(conv)
         print('Skip connection tensors:')
         print(encodings)
         return conv, encodings
@@ -124,9 +121,8 @@ class UnetModel:
         """
         Performs one encoding stack of U-net but with batch norm
         """
-        conv = tf.layers.conv2d(input_tensor, output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)#, name='conv-{}-0'.format(output_num_feature_channels))
-        #conv = tf.layers.batch_normalization(conv, training=self.batch_normalization_training_bool) # could optionally apply bn before nonlinearity following original bn paper. To do this, use linear activation in conv2d, then batch norm, then tf.nn.relu
-        conv = tf.layers.conv2d(conv, output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)#, name='conv{}-1'.format(output_num_feature_channels))
+        conv = tf.layers.conv2d(input_tensor, output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)
+        conv = tf.layers.conv2d(conv, output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)
         conv = self.batch_normalization(conv)
         return conv
 
@@ -166,9 +162,8 @@ class UnetModel:
                 align_corners=True)
 
         up = tf.concat([skip_connection_tensor, up], 3)
-        conv = tf.layers.conv2d(up,  output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)#, name='Conv')
-        #conv = tf.layers.batch_normalization(conv, training=self.batch_normalization_training_bool)
-        conv = tf.layers.conv2d(conv,  output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)#, name='Conv-2')
+        conv = tf.layers.conv2d(up,  output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)
+        conv = tf.layers.conv2d(conv,  output_num_feature_channels, [3, 3], padding="SAME", activation=tf.nn.relu, kernel_initializer=self.weights_initializer)
         return self.batch_normalization(conv)
 
     def batch_normalization(self, tensor, batch_normalize=True):
@@ -181,7 +176,7 @@ class UnetModel:
         else:
             return tensor
 
-    def _soft_dice_loss(self, Y_true, Y_hat):
+    def _soft_iou_loss(self, Y_true, Y_hat):
         return -1*tf.math.log(self._iou(Y_true, Y_hat))
 
     def _iou(self, Y_true, Y_hat, epsilon=1e-7):
@@ -189,10 +184,10 @@ class UnetModel:
         Returns an approximate intersection over union score for binary segmentation problems
 
         intesection = Y_hat.flatten() * Y_true.flatten()
-        IOU = 2 * intersection / (Y_hat.sum() + Y_true.sum() + epsilon) + epsilon
+        IOU = intersection / (Y_hat.sum() + Y_true.sum() + epsilon) + epsilon
 
-        :param y_hat: (4-D array): (N, H, W, 1)
-        :param Y_true: (4-D array): (N, H, W, 1)
+        :param y_hat: (4-D array): (N, H, W,2)
+        :param Y_true: (4-D array): (N, H, W,2)
         :return: floating point IoU score
         """
         Y_true_single_channel = Y_true[:,:,:,1]
@@ -206,10 +201,7 @@ class UnetModel:
         print('pred_flat: {}'.format(pred_flat))
         print('true_flat: {}'.format(true_flat))
 
-        intersection = 2 * tf.reduce_sum(pred_flat * true_flat, axis=1) + epsilon
-        denominator = tf.reduce_sum(
-            pred_flat, axis=1) + tf.reduce_sum(
-                true_flat, axis=1) + epsilon
+        intersection = tf.reduce_sum(pred_flat * true_flat, axis=1) + epsilon
+        denominator = tf.reduce_sum(pred_flat, axis=1) + tf.reduce_sum(true_flat, axis=1) - intersection + epsilon
 
         return tf.reduce_mean(intersection / denominator)
-
